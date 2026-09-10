@@ -1,282 +1,211 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-
 import socket from "../socket";
 
+import "./Home.css";
 
 function Home() {
 
-    const [username, setUsername] =
-        useState("");
+    const [username, setUsername] = useState("");
+    const [nameConfirmed, setNameConfirmed] = useState(false);
+    const [roomCode, setRoomCode] = useState("");
 
-    const [roomCode, setRoomCode] =
-        useState("");
-
-    const navigate =
-        useNavigate();
+    const navigate = useNavigate();
 
 
-    // ===================================
-    // CREATE ROOM
-    // ===================================
-
-    const handleCreateRoom = () => {
+    const handleContinue = () => {
 
         if (username.trim() === "") {
-
-            alert(
-                "Please enter your name"
-            );
-
             return;
         }
 
-
-        // Send username to server
         socket.emit(
             "setUsername",
             username.trim()
         );
 
-
-        // Ask server to create room
-        socket.emit(
-            "createRoom",
-
-            (response) => {
-
-                console.log(
-                    "Create response:",
-                    response
-                );
-
-
-                if (response.success) {
-
-                    navigate(
-                        "/lobby",
-
-                        {
-                            state: {
-
-                                roomCode:
-                                    response.roomCode,
-
-                                username:
-                                    username.trim(),
-
-                                players:
-                                    response.players
-
-                            }
-                        }
-                    );
-
-                }
-
-                else {
-
-                    alert(
-                        response.message
-                    );
-
-                }
-
-            }
-        );
-
+        setNameConfirmed(true);
     };
 
 
-    // ===================================
-    // JOIN ROOM
-    // ===================================
+    const handleCreateRoom = () => {
+
+        socket.emit(
+            "createRoom",
+            (response) => {
+
+                if (!response.success) {
+                    alert(response.message);
+                    return;
+                }
+
+                navigate(
+                    "/lobby",
+                    {
+                        state: {
+                            roomCode: response.roomCode,
+                            players: response.players
+                        }
+                    }
+                );
+            }
+        );
+    };
+
 
     const handleJoinRoom = () => {
 
-        if (username.trim() === "") {
-
-            alert(
-                "Please enter your name"
-            );
-
-            return;
-        }
-
-
         if (roomCode.trim() === "") {
-
-            alert(
-                "Please enter room code"
-            );
-
             return;
         }
 
-
-        // Send username first
-        socket.emit(
-            "setUsername",
-            username.trim()
-        );
-
-
-        console.log(
-            "Trying to join:",
-            roomCode
-        );
-
-
-        // Ask server to join room
         socket.emit(
             "joinRoom",
 
-            roomCode
-                .trim()
-                .toUpperCase(),
+            roomCode.trim().toUpperCase(),
 
             (response) => {
 
-                console.log(
-                    "Join response:",
-                    response
-                );
+                if (!response.success) {
+                    alert(response.message);
+                    return;
+                }
 
-
-                if (response.success) {
-
-                    navigate(
-                        "/lobby",
-
-                        {
-                            state: {
-
-                                roomCode:
-                                    response.roomCode,
-
-                                username:
-                                    username.trim(),
-
-                                players:
-                                    response.players
-
-                            }
+                navigate(
+                    "/lobby",
+                    {
+                        state: {
+                            roomCode: response.roomCode,
+                            players: response.players
                         }
-                    );
-
-                }
-
-                else {
-
-                    alert(
-                        response.message
-                    );
-
-                }
-
+                    }
+                );
             }
         );
-
     };
 
 
     return (
 
-        <div>
+        <main className="home">
 
-            <h1>
-                INK RUSH
-            </h1>
+            <section className="home-content">
 
-
-            <h3>
-                Enter your name
-            </h3>
+                <h1>
+                    INK<span>rush</span>
+                </h1>
 
 
-            <input
+                {!nameConfirmed ? (
 
-                type="text"
+                    <>
+                        <p className="subtitle">
+                            Pick a name to start playing.
+                        </p>
 
-                placeholder="Username"
+                        <input
+                            type="text"
+                            placeholder="Your name"
+                            value={username}
+                            maxLength={16}
+                            autoFocus
 
-                value={username}
+                            onChange={(e) =>
+                                setUsername(e.target.value)
+                            }
 
-                onChange={(e) => {
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                    handleContinue();
+                                }
+                            }}
+                        />
 
-                    setUsername(
-                        e.target.value
-                    );
+                        <button
+                            className="main-button"
+                            onClick={handleContinue}
+                        >
+                            Continue
+                        </button>
+                    </>
 
-                }}
+                ) : (
 
-            />
+                    <>
 
+                        <div className="player-name">
 
-            <br />
-            <br />
+                            <span>
+                                Playing as
+                            </span>
 
+                            <strong>
+                                {username}
+                            </strong>
 
-            <button
-                onClick={
-                    handleCreateRoom
-                }
-            >
+                            <button
+                                onClick={() =>
+                                    setNameConfirmed(false)
+                                }
+                            >
+                                change
+                            </button>
 
-                Create Room
-
-            </button>
-
-
-            <hr />
-
-
-            <h3>
-                Join existing room
-            </h3>
-
-
-            <input
-
-                type="text"
-
-                placeholder="Room Code"
-
-                maxLength={6}
-
-                value={roomCode}
-
-                onChange={(e) => {
-
-                    setRoomCode(
-                        e.target.value
-                            .toUpperCase()
-                    );
-
-                }}
-
-            />
+                        </div>
 
 
-            <br />
-            <br />
+                        <button
+                            className="main-button"
+                            onClick={handleCreateRoom}
+                        >
+                            Create room
+                        </button>
 
 
-            <button
-                onClick={
-                    handleJoinRoom
-                }
-            >
+                        <div className="divider">
+                            <span></span>
+                            <p>or</p>
+                            <span></span>
+                        </div>
 
-                Join Room
 
-            </button>
+                        <div className="join-room">
 
-        </div>
+                            <input
+                                type="text"
+                                placeholder="Room code"
+                                value={roomCode}
+                                maxLength={6}
 
+                                onChange={(e) =>
+                                    setRoomCode(
+                                        e.target.value.toUpperCase()
+                                    )
+                                }
+
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                        handleJoinRoom();
+                                    }
+                                }}
+                            />
+
+                            <button
+                                onClick={handleJoinRoom}
+                            >
+                                Join
+                            </button>
+
+                        </div>
+
+                    </>
+
+                )}
+
+            </section>
+
+        </main>
     );
-
 }
-
 
 export default Home;

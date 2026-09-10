@@ -2,6 +2,8 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
+import words from "./words.js";
+
 const app = express();
 
 const server = createServer(app);
@@ -13,11 +15,18 @@ const io = new Server(server, {
 });
 
 
-// All active rooms will be stored here
 const rooms = {};
 
+const MAX_PLAYERS = 4;
+const MAX_ROUNDS = 3;
+const TURN_TIME = 60;
+const HINT_INTERVAL = 15;
 
-// Generates a random 6-character room code
+
+// ======================================================
+// ROOM CODE
+// ======================================================
+
 function generateRoomCode() {
 
     const characters =
@@ -29,157 +38,591 @@ function generateRoomCode() {
 
         const randomIndex =
             Math.floor(
-                Math.random() * characters.length
+                Math.random() *
+                characters.length
             );
 
-        code += characters[randomIndex];
+        code +=
+            characters[randomIndex];
     }
 
     return code;
 }
 
 
-// Simple test route
+// ======================================================
+// WORD CHOICES
+// ======================================================
+
+function getWordChoices(room) {
+
+    const availableWords =
+        words.filter(
+            (word) =>
+                !room.usedWords.has(word)
+        );
+
+
+    const choices = [];
+
+
+    while (
+        choices.length < 3 &&
+        availableWords.length > 0
+    ) {
+
+        const randomIndex =
+            Math.floor(
+                Math.random() *
+                availableWords.length
+            );
+
+
+        const word =
+            availableWords[randomIndex];
+
+
+        choices.push(word);
+
+        room.usedWords.add(word);
+
+
+        availableWords.splice(
+            randomIndex,
+            1
+        );
+    }
+
+
+    return choices;
+}
+
+
+// ======================================================
+// HINT SYSTEM
+// ======================================================
+
+function createHintPositions(word) {
+
+    const positions = [];
+
+
+    for (
+        let i = 0;
+        i < word.length;
+        i++
+    ) {
+
+        if (word[i] !== " ") {
+            positions.push(i);
+        }
+
+    }
+
+
+    // Shuffle positions
+    for (
+        let i = positions.length - 1;
+        i > 0;
+        i--
+    ) {
+
+        const j =
+            Math.floor(
+                Math.random() *
+                (i + 1)
+            );
+
+
+        const temp =
+            positions[i];
+
+        positions[i] =
+            positions[j];
+
+        positions[j] =
+            temp;
+    }
+
+
+    const maxHints =
+        word.length <= 3
+            ? 1
+            : Math.min(
+                3,
+                positions.length
+            );
+
+
+    return positions.slice(
+        0,
+        maxHints
+    );
+}
+
+
+function getMaskedWord(room) {
+
+    if (!room.word) {
+        return "";
+    }
+
+
+    return room.word
+        .split("")
+        .map(
+            (character, index) => {
+
+                if (
+                    character === " "
+                ) {
+                    return " ";
+                }
+
+
+                if (
+                    room.revealedIndices
+                        .has(index)
+                ) {
+
+                    return character;
+                }
+
+
+                return "_";
+            }
+        )
+        .join("");
+}
+
+
+// ======================================================
+// TIMER HELPERS
+// ======================================================
+
+function clearRoomTimer(room) {
+
+    if (room.timer) {
+
+        clearInterval(
+            room.timer
+        );
+
+        room.timer = null;
+    }
+}
+
+
+// ======================================================
+// GAME OVER
+// ======================================================
+
+function finishGame(roomCode) {
+
+    const room =
+        rooms[roomCode];
+
+
+    if (!room) {
+        return;
+    }
+
+
+    clearRoomTimer(room);
+
+
+    room.gameStarted =
+        false;
+
+
+    const finalPlayers =
+        [...room.players].sort(
+            (a, b) =>
+                b.score - a.score
+        );
+
+
+    io.to(roomCode).emit(
+        "gameOver",
+        {
+            roomCode,
+            players: finalPlayers
+        }
+    );
+}
+
+
+// ======================================================
+// START TURN
+// ======================================================
+
+function startTurn(roomCode) {
+
+    const room =
+        rooms[roomCode];
+
+
+    if (!room) {
+        return;
+    }
+
+
+    // Everyone completed this round
+    if (
+        room.currentTurnIndex >=
+        room.players.length
+    ) {
+
+        room.currentTurnIndex = 0;
+
+        room.currentRound++;
+    }
+
+
+    // Finished 3 rounds
+    if (
+        room.currentRound >
+        MAX_ROUNDS
+    ) {
+
+        finishGame(roomCode);
+
+        return;
+    }
+
+
+    clearRoomTimer(room);
+
+
+    const drawer =
+        room.players[
+            room.currentTurnIndex
+        ];
+
+
+    if (!drawer) {
+        return;
+    }
+
+
+    room.drawerId =
+        drawer.id;
+
+    room.word =
+        null;
+
+    room.wordOptions =
+        [];
+
+    room.correctGuessers =
+        new Set();
+
+    room.revealedIndices =
+        new Set();
+
+    room.hintPositions =
+        [];
+
+    room.nextHintIndex =
+        0;
+
+    room.timeLeft =
+        TURN_TIME;
+
+    room.turnEnding =
+        false;
+
+
+    const choices =
+        getWordChoices(room);
+
+
+    room.wordOptions =
+        choices;
+
+
+    // New turn = clean board
+    io.to(roomCode).emit(
+        "clearCanvas"
+    );
+
+
+    // Everyone knows current drawer
+    io.to(roomCode).emit(
+        "turnPreparing",
+        {
+
+            round:
+                room.currentRound,
+
+            maxRounds:
+                MAX_ROUNDS,
+
+            drawerId:
+                drawer.id,
+
+            drawerUsername:
+                drawer.username,
+
+            players:
+                room.players
+
+        }
+    );
+
+
+    // Only drawer sees options
+    io.to(drawer.id).emit(
+        "wordChoices",
+        choices
+    );
+}
+
+
+// ======================================================
+// END TURN
+// ======================================================
+
+function endTurn(roomCode) {
+
+    const room =
+        rooms[roomCode];
+
+
+    if (!room) {
+        return;
+    }
+
+
+    if (room.turnEnding) {
+        return;
+    }
+
+
+    room.turnEnding =
+        true;
+
+
+    clearRoomTimer(room);
+
+
+    const oldWord =
+        room.word;
+
+
+    io.to(roomCode).emit(
+        "turnEnded",
+        {
+            word: oldWord
+        }
+    );
+
+
+    room.word =
+        null;
+
+
+    setTimeout(
+        () => {
+
+            const currentRoom =
+                rooms[roomCode];
+
+
+            if (!currentRoom) {
+                return;
+            }
+
+
+            currentRoom
+                .currentTurnIndex++;
+
+
+            currentRoom.turnEnding =
+                false;
+
+
+            startTurn(
+                roomCode
+            );
+
+        },
+        1200
+    );
+}
+
+
+// ======================================================
+// START TIMER
+// ======================================================
+
+function startTimer(roomCode) {
+
+    const room =
+        rooms[roomCode];
+
+
+    if (!room) {
+        return;
+    }
+
+
+    clearRoomTimer(room);
+
+
+    room.timeLeft =
+        TURN_TIME;
+
+
+    io.to(roomCode).emit(
+        "timerUpdate",
+        room.timeLeft
+    );
+
+
+    room.timer =
+        setInterval(
+            () => {
+
+                const currentRoom =
+                    rooms[roomCode];
+
+
+                if (!currentRoom) {
+                    return;
+                }
+
+
+                currentRoom.timeLeft--;
+
+
+                const elapsed =
+                    TURN_TIME -
+                    currentRoom.timeLeft;
+
+
+                // =================================
+                // HINT EVERY 15 SECONDS
+                // =================================
+
+                if (
+                    elapsed > 0 &&
+                    elapsed %
+                        HINT_INTERVAL ===
+                        0 &&
+                    currentRoom
+                        .nextHintIndex <
+                        currentRoom
+                            .hintPositions
+                            .length
+                ) {
+
+                    const position =
+                        currentRoom
+                            .hintPositions[
+                                currentRoom
+                                    .nextHintIndex
+                            ];
+
+
+                    currentRoom
+                        .revealedIndices
+                        .add(position);
+
+
+                    currentRoom
+                        .nextHintIndex++;
+
+
+                    io.to(roomCode).emit(
+                        "wordHint",
+                        getMaskedWord(
+                            currentRoom
+                        )
+                    );
+
+                }
+
+
+                io.to(roomCode).emit(
+                    "timerUpdate",
+                    currentRoom.timeLeft
+                );
+
+
+                if (
+                    currentRoom.timeLeft <=
+                    0
+                ) {
+
+                    endTurn(
+                        roomCode
+                    );
+                }
+
+            },
+            1000
+        );
+}
+
+
+// ======================================================
+// TEST ROUTE
+// ======================================================
+
 app.get("/", (req, res) => {
 
-    res.send("Ink Rush server is running");
-
+    res.send(
+        "Ink Rush server is running"
+    );
 });
 
 
-// Runs whenever a new player connects
+// ======================================================
+// SOCKET.IO
+// ======================================================
+
 io.on("connection", (socket) => {
 
     console.log(
-        "Player connected:",
+        "Connected:",
         socket.id
     );
 
 
-    // ===================================
-    // SET USERNAME
-    // ===================================
-
-    socket.on("setUsername", (username) => {
-
-        socket.data.username =
-            username.trim();
-
-        console.log(
-            "Username received:",
-            socket.data.username
-        );
-
-    });
-
-
-    // ===================================
-    // CREATE ROOM
-    // ===================================
-
-    socket.on("createRoom", (callback) => {
-
-        // Player must have a username
-        if (!socket.data.username) {
-
-            callback({
-                success: false,
-                message: "Username not set"
-            });
-
-            return;
-        }
-
-
-        // Generate room code
-        let roomCode =
-            generateRoomCode();
-
-
-        // Make sure room code is unique
-        while (rooms[roomCode]) {
-
-            roomCode =
-                generateRoomCode();
-
-        }
-
-
-        // Create room
-        rooms[roomCode] = {
-
-            hostId: socket.id,
-
-            players: [
-                {
-                    id: socket.id,
-                    username:
-                        socket.data.username,
-                    isHost: true
-                }
-            ]
-
-        };
-
-
-        // Add creator to Socket.IO room
-        socket.join(roomCode);
-
-
-        // Store room code on this socket
-        socket.data.roomCode =
-            roomCode;
-
-
-        console.log(
-            "Room created:",
-            roomCode
-        );
-
-        console.log(
-            "Players:",
-            rooms[roomCode].players
-        );
-
-
-        // Send room details back to creator
-        callback({
-
-            success: true,
-
-            roomCode: roomCode,
-
-            players:
-                rooms[roomCode].players
-
-        });
-
-    });
-
-
-    // ===================================
-    // JOIN ROOM
-    // ===================================
+    // ==================================================
+    // USERNAME
+    // ==================================================
 
     socket.on(
-        "joinRoom",
+        "setUsername",
+        (username) => {
 
-        (roomCode, callback) => {
-
-            console.log(
-                "joinRoom event received:",
-                roomCode
-            );
-
-
-            roomCode =
-                roomCode
-                    .trim()
-                    .toUpperCase();
+            if (
+                typeof username !==
+                "string"
+            ) {
+                return;
+            }
 
 
-            // Check username
-            if (!socket.data.username) {
+            socket.data.username =
+                username.trim();
+        }
+    );
+
+
+    // ==================================================
+    // CREATE ROOM
+    // ==================================================
+
+    socket.on(
+        "createRoom",
+        (callback) => {
+
+            if (
+                !socket.data.username
+            ) {
 
                 callback({
                     success: false,
@@ -191,8 +634,149 @@ io.on("connection", (socket) => {
             }
 
 
-            // Check room exists
-            if (!rooms[roomCode]) {
+            let roomCode =
+                generateRoomCode();
+
+
+            while (
+                rooms[roomCode]
+            ) {
+
+                roomCode =
+                    generateRoomCode();
+            }
+
+
+            rooms[roomCode] = {
+
+                hostId:
+                    socket.id,
+
+                players: [
+                    {
+
+                        id:
+                            socket.id,
+
+                        username:
+                            socket.data
+                                .username,
+
+                        isHost:
+                            true,
+
+                        score:
+                            0
+                    }
+                ],
+
+                gameStarted:
+                    false,
+
+                currentRound:
+                    1,
+
+                currentTurnIndex:
+                    0,
+
+                drawerId:
+                    null,
+
+                word:
+                    null,
+
+                wordOptions:
+                    [],
+
+                usedWords:
+                    new Set(),
+
+                correctGuessers:
+                    new Set(),
+
+                revealedIndices:
+                    new Set(),
+
+                hintPositions:
+                    [],
+
+                nextHintIndex:
+                    0,
+
+                timer:
+                    null,
+
+                timeLeft:
+                    TURN_TIME,
+
+                readyPlayers:
+                    new Set(),
+
+                turnsStarted:
+                    false,
+
+                turnEnding:
+                    false
+            };
+
+
+            socket.join(
+                roomCode
+            );
+
+
+            socket.data.roomCode =
+                roomCode;
+
+
+            callback({
+                success: true,
+                roomCode,
+                players:
+                    rooms[roomCode]
+                        .players
+            });
+        }
+    );
+
+
+    // ==================================================
+    // JOIN ROOM
+    // ==================================================
+
+    socket.on(
+        "joinRoom",
+
+        (
+            roomCode,
+            callback
+        ) => {
+
+            if (
+                !socket.data.username
+            ) {
+
+                callback({
+                    success: false,
+                    message:
+                        "Username not set"
+                });
+
+                return;
+            }
+
+
+            roomCode =
+                roomCode
+                    .trim()
+                    .toUpperCase();
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (!room) {
 
                 callback({
                     success: false,
@@ -204,151 +788,736 @@ io.on("connection", (socket) => {
             }
 
 
-            // Add player to our room array
-            rooms[roomCode].players.push({
+            if (
+                room.gameStarted
+            ) {
 
-                id: socket.id,
+                callback({
+                    success: false,
+                    message:
+                        "Game already started"
+                });
+
+                return;
+            }
+
+
+            if (
+                room.players.length >=
+                MAX_PLAYERS
+            ) {
+
+                callback({
+                    success: false,
+                    message:
+                        "Room is full"
+                });
+
+                return;
+            }
+
+
+            room.players.push({
+
+                id:
+                    socket.id,
 
                 username:
                     socket.data.username,
 
-                isHost: false
+                isHost:
+                    false,
+
+                score:
+                    0
 
             });
 
 
-            // Add socket to actual Socket.IO room
-            socket.join(roomCode);
+            socket.join(
+                roomCode
+            );
 
 
-            // Remember which room this socket belongs to
             socket.data.roomCode =
                 roomCode;
 
 
-            console.log(
-                socket.data.username,
-                "joined room",
-                roomCode
-            );
-
-            console.log(
-                "Players:",
-                rooms[roomCode].players
-            );
-
-
-            // Tell EVERY player in this room
-            // about the new player list
             io.to(roomCode).emit(
                 "playersUpdated",
-                rooms[roomCode].players
+                room.players
             );
 
 
-            // Tell joining player that join succeeded
             callback({
-
                 success: true,
-
-                roomCode: roomCode,
-
+                roomCode,
                 players:
-                    rooms[roomCode].players
-
+                    room.players
             });
-
         }
     );
 
 
-    // ===================================
-    // DISCONNECT
-    // ===================================
+    // ==================================================
+    // START GAME
+    // ==================================================
 
-    socket.on("disconnect", () => {
+    socket.on(
+        "startGame",
 
-        console.log(
-            "Player disconnected:",
-            socket.id
-        );
+        (
+            roomCode,
+            callback
+        ) => {
 
-
-        const roomCode =
-            socket.data.roomCode;
-
-
-        // Player wasn't inside any room
-        if (!roomCode) {
-            return;
-        }
+            const room =
+                rooms[roomCode];
 
 
-        // Room no longer exists
-        if (!rooms[roomCode]) {
-            return;
-        }
+            if (!room) {
+
+                callback({
+                    success: false,
+                    message:
+                        "Room does not exist"
+                });
+
+                return;
+            }
 
 
-        // Remove disconnected player
-        rooms[roomCode].players =
-            rooms[roomCode].players.filter(
-                (player) =>
-                    player.id !== socket.id
+            if (
+                room.hostId !==
+                socket.id
+            ) {
+
+                callback({
+                    success: false,
+                    message:
+                        "Only host can start"
+                });
+
+                return;
+            }
+
+
+            if (
+                room.players.length < 2
+            ) {
+
+                callback({
+                    success: false,
+                    message:
+                        "At least 2 players required"
+                });
+
+                return;
+            }
+
+
+            room.players.forEach(
+                (player) => {
+
+                    player.score = 0;
+
+                }
             );
 
 
-        // If room becomes empty,
-        // delete the whole room
-        if (
-            rooms[roomCode].players.length === 0
-        ) {
+            room.gameStarted =
+                true;
 
-            delete rooms[roomCode];
+            room.currentRound =
+                1;
 
-            console.log(
-                "Room deleted:",
+            room.currentTurnIndex =
+                0;
+
+            room.drawerId =
+                null;
+
+            room.word =
+                null;
+
+            room.usedWords =
+                new Set();
+
+            room.readyPlayers =
+                new Set();
+
+            room.turnsStarted =
+                false;
+
+
+            io.to(roomCode).emit(
+                "gameStarted",
+                {
+                    roomCode,
+                    players:
+                        room.players
+                }
+            );
+
+
+            callback({
+                success: true
+            });
+        }
+    );
+
+
+    // ==================================================
+    // PLAYER LOADED GAME PAGE
+    // ==================================================
+
+    socket.on(
+        "gameReady",
+        () => {
+
+            const roomCode =
+                socket.data.roomCode;
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (
+                !room ||
+                !room.gameStarted
+            ) {
+                return;
+            }
+
+
+            room.readyPlayers.add(
+                socket.id
+            );
+
+
+            if (
+                room.readyPlayers.size >=
+                    room.players.length &&
+                !room.turnsStarted
+            ) {
+
+                room.turnsStarted =
+                    true;
+
+
+                startTurn(
+                    roomCode
+                );
+            }
+        }
+    );
+
+
+    // ==================================================
+    // CHOOSE WORD
+    // ==================================================
+
+    socket.on(
+        "chooseWord",
+        (selectedWord) => {
+
+            const roomCode =
+                socket.data.roomCode;
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (!room) {
+                return;
+            }
+
+
+            if (
+                room.drawerId !==
+                socket.id
+            ) {
+                return;
+            }
+
+
+            if (
+                !room.wordOptions.includes(
+                    selectedWord
+                )
+            ) {
+                return;
+            }
+
+
+            room.word =
+                selectedWord;
+
+
+            room.wordOptions =
+                [];
+
+
+            room.revealedIndices =
+                new Set();
+
+
+            room.hintPositions =
+                createHintPositions(
+                    selectedWord
+                );
+
+
+            room.nextHintIndex =
+                0;
+
+
+            io.to(socket.id).emit(
+                "wordSelected",
+                {
+                    word:
+                        selectedWord
+                }
+            );
+
+
+            const drawer =
+                room.players.find(
+                    (player) =>
+                        player.id ===
+                        room.drawerId
+                );
+
+
+            io.to(roomCode).emit(
+                "turnStarted",
+                {
+
+                    round:
+                        room.currentRound,
+
+                    maxRounds:
+                        MAX_ROUNDS,
+
+                    drawerId:
+                        room.drawerId,
+
+                    drawerUsername:
+                        drawer
+                            ?.username,
+
+                    duration:
+                        TURN_TIME,
+
+                    hint:
+                        getMaskedWord(
+                            room
+                        )
+
+                }
+            );
+
+
+            startTimer(
                 roomCode
             );
-
-            return;
         }
-
-
-        // If host disconnected,
-        // first remaining player becomes host
-        if (
-            rooms[roomCode].hostId ===
-            socket.id
-        ) {
-
-            const newHost =
-                rooms[roomCode].players[0];
-
-            rooms[roomCode].hostId =
-                newHost.id;
-
-            newHost.isHost = true;
-
-        }
-
-
-        // Update remaining players
-        io.to(roomCode).emit(
-            "playersUpdated",
-            rooms[roomCode].players
-        );
-
-    });
-
-});
-
-
-// Start backend server
-server.listen(3001, () => {
-
-    console.log(
-        "Server running on port 3001"
     );
 
+
+    // ==================================================
+    // DRAWING
+    // ==================================================
+
+    socket.on(
+        "draw",
+        (data) => {
+
+            const room =
+                rooms[
+                    socket.data
+                        .roomCode
+                ];
+
+
+            if (!room) {
+                return;
+            }
+
+
+            if (
+                socket.id !==
+                room.drawerId
+            ) {
+                return;
+            }
+
+
+            if (!room.word) {
+                return;
+            }
+
+
+            socket
+                .to(
+                    socket.data
+                        .roomCode
+                )
+                .emit(
+                    "draw",
+                    data
+                );
+        }
+    );
+
+
+    // ==================================================
+    // CLEAR CANVAS
+    // ==================================================
+
+    socket.on(
+        "clearCanvasRequest",
+        () => {
+
+            const roomCode =
+                socket.data.roomCode;
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (!room) {
+                return;
+            }
+
+
+            if (
+                socket.id !==
+                room.drawerId
+            ) {
+                return;
+            }
+
+
+            io.to(roomCode).emit(
+                "clearCanvas"
+            );
+        }
+    );
+
+
+    // ==================================================
+    // GUESS
+    // ==================================================
+
+    socket.on(
+        "sendGuess",
+        (guess) => {
+
+            const roomCode =
+                socket.data.roomCode;
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (
+                !room ||
+                !room.word
+            ) {
+                return;
+            }
+
+
+            if (
+                socket.id ===
+                room.drawerId
+            ) {
+                return;
+            }
+
+
+            const cleanGuess =
+                guess
+                    .trim()
+                    .toLowerCase();
+
+
+            if (!cleanGuess) {
+                return;
+            }
+
+
+            // =====================================
+            // CORRECT
+            // =====================================
+
+            if (
+                cleanGuess ===
+                room.word
+                    .toLowerCase()
+            ) {
+
+                if (
+                    room.correctGuessers
+                        .has(
+                            socket.id
+                        )
+                ) {
+                    return;
+                }
+
+
+                room.correctGuessers.add(
+                    socket.id
+                );
+
+
+                const player =
+                    room.players.find(
+                        (player) =>
+                            player.id ===
+                            socket.id
+                    );
+
+
+                if (player) {
+
+                    player.score +=
+                        100;
+                }
+
+
+                io.to(roomCode).emit(
+                    "chatMessage",
+                    {
+                        system: true,
+
+                        text:
+                            socket.data
+                                .username +
+                            " guessed the word"
+                    }
+                );
+
+
+                io.to(socket.id).emit(
+                    "youGuessedCorrectly"
+                );
+
+
+                io.to(roomCode).emit(
+                    "scoresUpdated",
+                    room.players
+                );
+
+
+                // =====================================
+                // EVERY GUESSER IS CORRECT
+                // END TURN IMMEDIATELY
+                // =====================================
+
+                const requiredCorrect =
+                    room.players.length -
+                    1;
+
+
+                if (
+                    room.correctGuessers
+                        .size >=
+                    requiredCorrect
+                ) {
+
+                    endTurn(
+                        roomCode
+                    );
+                }
+
+
+                return;
+            }
+
+
+            // Wrong guess
+            io.to(roomCode).emit(
+                "chatMessage",
+                {
+                    username:
+                        socket.data
+                            .username,
+
+                    text:
+                        guess
+                }
+            );
+        }
+    );
+
+
+    // ==================================================
+    // DISCONNECT
+    // ==================================================
+
+    socket.on(
+        "disconnect",
+        () => {
+
+            const roomCode =
+                socket.data.roomCode;
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (!room) {
+                return;
+            }
+
+
+            const removedIndex =
+                room.players.findIndex(
+                    (player) =>
+                        player.id ===
+                        socket.id
+                );
+
+
+            room.players =
+                room.players.filter(
+                    (player) =>
+                        player.id !==
+                        socket.id
+                );
+
+
+            room.readyPlayers
+                ?.delete(
+                    socket.id
+                );
+
+
+            room.correctGuessers
+                ?.delete(
+                    socket.id
+                );
+
+
+            if (
+                room.players.length ===
+                0
+            ) {
+
+                clearRoomTimer(
+                    room
+                );
+
+
+                delete rooms[
+                    roomCode
+                ];
+
+                return;
+            }
+
+
+            // Change host
+            if (
+                room.hostId ===
+                socket.id
+            ) {
+
+                room.hostId =
+                    room.players[0].id;
+
+
+                room.players.forEach(
+                    (player) => {
+
+                        player.isHost =
+                            player.id ===
+                            room.hostId;
+
+                    }
+                );
+            }
+
+
+            if (
+                removedIndex >= 0 &&
+                removedIndex <
+                    room.currentTurnIndex
+            ) {
+
+                room.currentTurnIndex--;
+            }
+
+
+            if (
+                room.gameStarted &&
+                room.drawerId ===
+                    socket.id
+            ) {
+
+                clearRoomTimer(
+                    room
+                );
+
+
+                room.turnEnding =
+                    false;
+
+
+                startTurn(
+                    roomCode
+                );
+            }
+
+
+            io.to(roomCode).emit(
+                "playersUpdated",
+                room.players
+            );
+
+
+            io.to(roomCode).emit(
+                "scoresUpdated",
+                room.players
+            );
+
+
+            // If all remaining guessers
+            // already guessed
+            if (
+                room.gameStarted &&
+                room.word &&
+                room.correctGuessers.size >=
+                    room.players.length -
+                        1
+            ) {
+
+                endTurn(
+                    roomCode
+                );
+            }
+        }
+    );
 });
+
+
+const PORT =
+    process.env.PORT || 3001;
+
+server.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
+        console.log(
+            `Server running on port ${PORT}`
+        );
+    }
+);
