@@ -10,7 +10,11 @@ const server = createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: "https://ink-rush-gold.vercel.app/"
+        origin: [
+            "http://localhost:5173",
+            "https://ink-rush-gold.vercel.app"
+        ],
+        methods: ["GET", "POST"]
     }
 });
 

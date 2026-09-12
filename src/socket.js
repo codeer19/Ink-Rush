@@ -1,23 +1,25 @@
 import { io } from "socket.io-client";
 
 const SERVER_URL =
-    import.meta.env.VITE_SERVER_URL ||
-    "https://ink-rush.onrender.com/";
+    "https://ink-rush.onrender.com";
 
-console.log("Connecting to backend:", SERVER_URL);
+console.log(
+    "Connecting to backend:",
+    SERVER_URL
+);
 
 const socket = io(SERVER_URL);
 
 socket.on("connect", () => {
     console.log(
-        "Socket connected:",
+        "SOCKET CONNECTED:",
         socket.id
     );
 });
 
 socket.on("connect_error", (error) => {
     console.error(
-        "Socket connection failed:",
+        "SOCKET ERROR:",
         error.message
     );
 });
