@@ -11,16 +11,8 @@ function Navbar() {
                 INK<span>rush</span>
             </Link>
 
-            <div className="nav-links">
-
-                <Link to="/">
-                    Home
-                </Link>
-
-                <Link to="/lobby">
-                    Lobby
-                </Link>
-
+            <div className="nav-info">
+                2–4 players · realtime
             </div>
 
         </nav>
