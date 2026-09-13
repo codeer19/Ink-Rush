@@ -25,6 +25,8 @@ const MAX_PLAYERS = 4;
 const MAX_ROUNDS = 3;
 const TURN_TIME = 60;
 const HINT_INTERVAL = 15;
+const POINTS_PER_GUESS = 20;
+const MAX_GUESS_POINTS = 100;
 
 
 // ======================================================
@@ -408,6 +410,38 @@ function endTurn(roomCode) {
 
 
     clearRoomTimer(room);
+
+
+    const drawer =
+        room.players.find(
+            (player) =>
+                player.id ===
+                room.drawerId
+        );
+
+
+    if (drawer && room.correctGuessers.size > 0) {
+
+        const missedGuesses =
+            room.players.length -
+            1 -
+            room.correctGuessers.size;
+
+
+        drawer.score +=
+            Math.max(
+                0,
+                MAX_GUESS_POINTS -
+                    missedGuesses *
+                    POINTS_PER_GUESS
+            );
+    }
+
+
+    io.to(roomCode).emit(
+        "scoresUpdated",
+        room.players
+    );
 
 
     const oldWord =
@@ -1178,6 +1212,50 @@ io.on("connection", (socket) => {
 
 
     // ==================================================
+    // FILL CANVAS
+    // ==================================================
+
+    socket.on(
+        "fillCanvas",
+        (data) => {
+
+            const roomCode =
+                socket.data.roomCode;
+
+
+            const room =
+                rooms[roomCode];
+
+
+            if (!room) {
+                return;
+            }
+
+
+            if (socket.id !== room.drawerId || !room.word) {
+                return;
+            }
+
+
+            if (
+                !data ||
+                typeof data.x !== "number" ||
+                typeof data.y !== "number" ||
+                typeof data.color !== "string"
+            ) {
+                return;
+            }
+
+
+            socket.to(roomCode).emit(
+                "fillCanvas",
+                data
+            );
+        }
+    );
+
+
+    // ==================================================
     // CLEAR CANVAS
     // ==================================================
 
@@ -1291,8 +1369,21 @@ io.on("connection", (socket) => {
 
                 if (player) {
 
+                    const guessRank =
+                        room.correctGuessers.size;
+
+
+                    const guessPoints =
+                        Math.max(
+                            0,
+                            MAX_GUESS_POINTS -
+                                (guessRank - 1) *
+                                POINTS_PER_GUESS
+                        );
+
+
                     player.score +=
-                        100;
+                        guessPoints;
                 }
 
 
@@ -1314,17 +1405,6 @@ io.on("connection", (socket) => {
                 );
 
 
-                io.to(roomCode).emit(
-                    "scoresUpdated",
-                    room.players
-                );
-
-
-                // =====================================
-                // EVERY GUESSER IS CORRECT
-                // END TURN IMMEDIATELY
-                // =====================================
-
                 const requiredCorrect =
                     room.players.length -
                     1;
@@ -1335,9 +1415,20 @@ io.on("connection", (socket) => {
                         .size >=
                     requiredCorrect
                 ) {
-
                     endTurn(
                         roomCode
+                    );
+                }
+
+
+                if (
+                    room.correctGuessers
+                        .size <
+                    requiredCorrect
+                ) {
+                    io.to(roomCode).emit(
+                        "scoresUpdated",
+                        room.players
                     );
                 }
 

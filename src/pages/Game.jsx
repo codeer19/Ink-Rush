@@ -122,6 +122,12 @@ function Game() {
 
 
     const [
+        fillTool,
+        setFillTool
+    ] = useState(false);
+
+
+    const [
         hasGuessed,
         setHasGuessed
     ] = useState(false);
@@ -233,6 +239,104 @@ function Game() {
     };
 
 
+    const hexToRgba = (hex) => {
+
+        const value =
+            hex.replace("#", "");
+
+        const expanded =
+            value.length === 3
+                ? value.split("").map((char) => char + char).join("")
+                : value;
+
+        return [
+            parseInt(expanded.slice(0, 2), 16),
+            parseInt(expanded.slice(2, 4), 16),
+            parseInt(expanded.slice(4, 6), 16),
+            255
+        ];
+    };
+
+
+    const fillCanvas = (x, y, color) => {
+
+        const canvas =
+            canvasRef.current;
+
+        if (!canvas) {
+            return;
+        }
+
+        const ctx =
+            canvas.getContext("2d");
+
+        const imageData =
+            ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        const { data, width, height } = imageData;
+
+        const startX = Math.max(0, Math.min(width - 1, Math.floor(x)));
+        const startY = Math.max(0, Math.min(height - 1, Math.floor(y)));
+        const startIndex = (startY * width + startX) * 4;
+        const target = [
+            data[startIndex],
+            data[startIndex + 1],
+            data[startIndex + 2],
+            data[startIndex + 3]
+        ];
+        const replacement = hexToRgba(color);
+
+        if (
+            target[0] === replacement[0] &&
+            target[1] === replacement[1] &&
+            target[2] === replacement[2] &&
+            target[3] === replacement[3]
+        ) {
+            return;
+        }
+
+        const matchesTarget = (index) =>
+            data[index] === target[0] &&
+            data[index + 1] === target[1] &&
+            data[index + 2] === target[2] &&
+            data[index + 3] === target[3];
+
+        const stack = [[startX, startY]];
+        const visited = new Uint8Array(width * height);
+
+        while (stack.length) {
+
+            const [px, py] = stack.pop();
+
+            const pixelIndex = py * width + px;
+
+            if (visited[pixelIndex]) {
+                continue;
+            }
+
+            const index = pixelIndex * 4;
+
+            if (!matchesTarget(index)) {
+                continue;
+            }
+
+            visited[pixelIndex] = 1;
+
+            data[index] = replacement[0];
+            data[index + 1] = replacement[1];
+            data[index + 2] = replacement[2];
+            data[index + 3] = replacement[3];
+
+            if (px > 0) stack.push([px - 1, py]);
+            if (px < width - 1) stack.push([px + 1, py]);
+            if (py > 0) stack.push([px, py - 1]);
+            if (py < height - 1) stack.push([px, py + 1]);
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+    };
+
+
     const getPosition =
         (event) => {
 
@@ -283,14 +387,36 @@ function Game() {
             }
 
 
+            const position =
+                getPosition(event);
+
+            if (fillTool) {
+
+                fillCanvas(
+                    position.x,
+                    position.y,
+                    selectedColor
+                );
+
+                socket.emit(
+                    "fillCanvas",
+                    {
+                        x: position.x,
+                        y: position.y,
+                        color: selectedColor
+                    }
+                );
+
+                return;
+            }
+
+
             drawingRef.current =
                 true;
 
 
             lastPointRef.current =
-                getPosition(
-                    event
-                );
+                position;
         };
 
 
@@ -470,6 +596,7 @@ function Game() {
                 );
 
                 setEraser(false);
+                setFillTool(false);
             };
 
 
@@ -548,6 +675,17 @@ function Game() {
                     data.y2,
                     data.color,
                     data.width
+                );
+            };
+
+
+        const onFillCanvas =
+            (data) => {
+
+                fillCanvas(
+                    data.x,
+                    data.y,
+                    data.color
                 );
             };
 
@@ -670,6 +808,11 @@ function Game() {
         );
 
         socket.on(
+            "fillCanvas",
+            onFillCanvas
+        );
+
+        socket.on(
             "clearCanvas",
             onClear
         );
@@ -745,6 +888,11 @@ function Game() {
             socket.off(
                 "draw",
                 onDraw
+            );
+
+            socket.off(
+                "fillCanvas",
+                onFillCanvas
             );
 
             socket.off(
@@ -1165,6 +1313,7 @@ function Game() {
                                                         setEraser(
                                                             false
                                                         );
+                                                        setFillTool(false);
 
                                                     }}
                                                 />
@@ -1183,13 +1332,29 @@ function Game() {
                                             : "tool-button"
                                     }
 
-                                    onClick={() =>
-                                        setEraser(
-                                            true
-                                        )
+                                    onClick={() => {
+                                        setEraser(true);
+                                        setFillTool(false);
+                                    }
                                     }
                                 >
                                     Eraser
+                                </button>
+
+
+                                <button
+                                    className={
+                                        fillTool
+                                            ? "tool-button selected-tool"
+                                            : "tool-button"
+                                    }
+
+                                    onClick={() => {
+                                        setFillTool(true);
+                                        setEraser(false);
+                                    }}
+                                >
+                                    Fill
                                 </button>
 
 
